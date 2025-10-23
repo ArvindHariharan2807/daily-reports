@@ -28,7 +28,7 @@ public class SeleniumConfig {
 
         ChromeOptions options = new ChromeOptions();
         options.setExperimentalOption("prefs", prefs);
-        options.addArguments("--headless", "--disable-gpu");
+        options.addArguments("--disable-gpu");
 
         return new ChromeDriver(options);
     }

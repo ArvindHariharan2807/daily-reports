@@ -1,24 +1,54 @@
 package com.dailystatus.dailyupdate.service;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import com.dailystatus.dailyupdate.entity.DailyReport;
+import com.dailystatus.dailyupdate.entity.DailyReportHistory;
+import com.dailystatus.dailyupdate.repository.DailyReportHistoryRepository;
+import com.dailystatus.dailyupdate.repository.DailyReportRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
 
 @Service
 public class ReportService {
 
-    @Autowired
-    private com.dailystatus.dailyupdate.service.SeleniumDownloadService seleniumDownloadService;
+    private final DailyReportRepository dailyReportRepository;
+    private final DailyReportHistoryRepository historyRepository;
 
-    @Autowired
-    private ExcelImportService excelImportService;
+    public ReportService(DailyReportRepository dailyReportRepository,
+                         DailyReportHistoryRepository historyRepository) {
+        this.dailyReportRepository = dailyReportRepository;
+        this.historyRepository = historyRepository;
+    }
 
-    public void downloadAndProcessReport() throws Exception {
-        // Step 1️⃣: Use Selenium to download the Google Sheet
-        String downloadedFilePath = seleniumDownloadService.downloadReport();
+    @Transactional
+    public void moveToHistory() {
+        // Fetch all daily reports to move
+        List<DailyReport> reports = dailyReportRepository.findAll();
 
-        // Step 2️⃣: Parse the Excel and process it
-        excelImportService.importExcel(downloadedFilePath);
+        for (DailyReport report : reports) {
+            // Create history object
+            DailyReportHistory history = new DailyReportHistory();
 
-        System.out.println("✅ Report downloaded and processed successfully.");
+            history.setEmployeeName(report.getEmployeeName());
+            history.setReportDate(report.getReportDate());
+            history.setSprintNo(report.getSprintNo() != null ? report.getSprintNo() : "");
+            history.setTicketNo(report.getTicketNo() != null ? report.getTicketNo() : "");
+            history.setParentPc(report.getParentPc() != null ? report.getParentPc() : "");
+            history.setWorkPlanned(report.getWorkPlanned() != null ? report.getWorkPlanned() : "");
+            history.setEstimation(report.getEstimation() != null ? report.getEstimation() : BigDecimal.valueOf(0.0));
+            history.setStatus(report.getStatus() != null ? report.getStatus() : "");
+            history.setActualTime(report.getActualTime() != null ? report.getActualTime() : BigDecimal.valueOf(0.0));
+            history.setReasonForDelay(report.getReasonForDelay() != null ? report.getReasonForDelay() : "");
+            history.setComments(report.getComments() != null ? report.getComments() : "");
+
+            // Save to history table
+            historyRepository.save(history);
+
+            // Delete the report after successful history save
+            dailyReportRepository.delete(report);
+        }
     }
 }

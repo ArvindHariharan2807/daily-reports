@@ -1,13 +1,24 @@
 package com.dailystatus.dailyupdate.repository;
 
 import com.dailystatus.dailyupdate.entity.DailyReport;
-import com.dailystatus.dailyupdate.entity.Employee;
 import org.springframework.data.jpa.repository.JpaRepository;
-import java.time.LocalDate;
-import java.util.Optional;
-import java.util.List;
+import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+@Repository
 public interface DailyReportRepository extends JpaRepository<DailyReport, Long> {
-    Optional<DailyReport> findByEmployeeAndReportDateAndTicketNo(Employee employee, LocalDate reportDate, String ticketNo);
-    List<DailyReport> findByEmployee(Employee employee);
+
+    // For rows with ticket numbers (unique)
+    Optional<DailyReport> findByEmployeeNameAndTicketNoAndReportDate(
+            String employeeName, String ticketNo, LocalDate reportDate);
+
+    // For rows without ticket numbers (multiple possible)
+    List<DailyReport> findByEmployeeNameAndReportDate(
+            String employeeName, LocalDate reportDate);
+
+    // Delete only today's records
+    void deleteByReportDate(LocalDate reportDate);
 }

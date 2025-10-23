@@ -1,102 +1,162 @@
 package com.dailystatus.dailyupdate.service;
 
-import com.dailystatus.dailyupdate.dto.ExcelRowDTO;
 import com.dailystatus.dailyupdate.entity.DailyReport;
-import com.dailystatus.dailyupdate.entity.DailyReportHistory;
-import com.dailystatus.dailyupdate.entity.Employee;
-import com.dailystatus.dailyupdate.repository.DailyReportHistoryRepository;
 import com.dailystatus.dailyupdate.repository.DailyReportRepository;
 import com.dailystatus.dailyupdate.repository.EmployeeRepository;
-import lombok.RequiredArgsConstructor;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.ss.usermodel.WorkbookFactory;
-import org.springframework.beans.BeanUtils;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
 import java.util.Optional;
 
+@Slf4j
 @Service
-@RequiredArgsConstructor
 public class ExcelImportService {
 
-    private final EmployeeRepository employeeRepo;
-    private final DailyReportRepository dailyRepo;
-    private final DailyReportHistoryRepository historyRepo;
+    @Autowired
+    private DailyReportRepository dailyReportRepository;
 
-    public void importExcel(String filePath) throws Exception {
-        FileInputStream fis = new FileInputStream(new File(filePath));
-        Workbook workbook = WorkbookFactory.create(fis);
-        Sheet sheet = workbook.getSheetAt(0);
+    @Autowired
+    private EmployeeRepository employeeRepository;
 
-        int rowCount = 0;
-        for (Row row : sheet) {
-            if (rowCount == 0) { // skip header
-                rowCount++;
+    @Transactional
+    public void importExcel(String excelFilePath) {
+        LocalDate today = LocalDate.now();
+        File excelFile = new File(excelFilePath);
+
+        log.info("🧹 Deleting existing records for {}", today);
+        dailyReportRepository.deleteByReportDate(today);
+
+        List<DailyReport> excelRows = parseExcel(excelFile, today);
+
+        int skippedCount = 0;
+        int importedCount = 0;
+
+        for (DailyReport row : excelRows) {
+            // ✅ Validate employee existence before inserting
+            String empName = row.getEmployeeName();
+            if (empName == null || empName.isBlank()) continue;
+
+            boolean employeeExists = employeeRepository.findByResourceNameIgnoreCase(empName.trim()).isPresent();
+            if (!employeeExists) {
+                log.debug("🚫 Skipping record — employee not found in EMPLOYEE table: {}", empName);
+                skippedCount++;
                 continue;
             }
 
-            ExcelRowDTO dto = mapRowToDTO(row);
-            processRow(dto);
-            rowCount++;
+            // ✅ Only insert/update today's records
+            if (!today.equals(row.getReportDate())) continue;
+
+            if (row.getTicketNo() != null && !row.getTicketNo().isBlank()) {
+                Optional<DailyReport> existing = dailyReportRepository
+                        .findByEmployeeNameAndTicketNoAndReportDate(
+                                row.getEmployeeName(), row.getTicketNo(), today);
+
+                if (existing.isPresent()) {
+                    DailyReport report = existing.get();
+                    updateReport(report, row);
+                    dailyReportRepository.save(report);
+                } else {
+                    dailyReportRepository.save(row);
+                }
+            } else {
+                dailyReportRepository.save(row);
+            }
+            importedCount++;
         }
 
-        workbook.close();
-        fis.close();
-
-        System.out.println("✅ Excel imported successfully with " + (rowCount - 1) + " records.");
+        log.info("✅ Import complete. {} records saved, {} skipped (employees not found).", importedCount, skippedCount);
     }
 
-    private ExcelRowDTO mapRowToDTO(Row row) {
-        ExcelRowDTO dto = new ExcelRowDTO();
-        dto.setDate(row.getCell(0).getLocalDateTimeCellValue().toLocalDate());
-        dto.setSprintNo(row.getCell(1).getStringCellValue());
-        dto.setTicketNo(row.getCell(2).getStringCellValue());
-        dto.setParentPc(row.getCell(3).getStringCellValue());
-        dto.setResourceName(row.getCell(4).getStringCellValue());
-        dto.setWorkPlanned(row.getCell(5).getStringCellValue());
-        dto.setEstimation(BigDecimal.valueOf(row.getCell(6).getNumericCellValue()));
-        dto.setStatus(row.getCell(7).getStringCellValue());
-        dto.setActualTime(BigDecimal.valueOf(row.getCell(8).getNumericCellValue()));
-        dto.setReasonForDelay(row.getCell(9).getStringCellValue());
-        dto.setComments(row.getCell(10).getStringCellValue());
-        return dto;
+    private void updateReport(DailyReport target, DailyReport source) {
+        target.setWorkPlanned(source.getWorkPlanned());
+        target.setEstimation(source.getEstimation());
+        target.setActualTime(source.getActualTime());
+        target.setStatus(source.getStatus());
+        target.setReasonForDelay(source.getReasonForDelay());
+        target.setComments(source.getComments());
     }
 
-    private void processRow(ExcelRowDTO dto) {
-        Employee emp = employeeRepo.findByResourceName(dto.getResourceName())
-                .orElseGet(() -> {
-                    Employee e = new Employee();
-                    e.setResourceName(dto.getResourceName());
-                    return employeeRepo.save(e);
-                });
+    private List<DailyReport> parseExcel(File excelFile, LocalDate today) {
+        List<DailyReport> reports = new ArrayList<>();
+        DateTimeFormatter df = DateTimeFormatter.ofPattern("dd-MM-yyyy");
 
-        Optional<DailyReport> existing = dailyRepo.findByEmployeeAndReportDateAndTicketNo(
-                emp, dto.getDate(), dto.getTicketNo());
+        try (FileInputStream fis = new FileInputStream(excelFile);
+             Workbook workbook = new XSSFWorkbook(fis)) {
 
-        DailyReport report;
-        if (existing.isPresent()) {
-            report = existing.get();
+            Sheet sheet = workbook.getSheetAt(0);
+            for (Row row : sheet) {
+                if (row.getRowNum() == 0) continue; // skip header
 
-            // Save old data into history
-            DailyReportHistory history = new DailyReportHistory();
-            BeanUtils.copyProperties(report, history);
-            history.setReport(report);
-            historyRepo.save(history);
+                String dateStr = getCellValue(row.getCell(0));
+                if (dateStr == null || dateStr.isBlank()) continue;
 
-            // Update existing record
-            BeanUtils.copyProperties(dto, report);
-            report.setEmployee(emp);
-        } else {
-            report = new DailyReport();
-            BeanUtils.copyProperties(dto, report);
-            report.setEmployee(emp);
+                LocalDate reportDate;
+                try {
+                    reportDate = LocalDate.parse(dateStr.trim(), df);
+                } catch (Exception e) {
+                    log.warn("⏭️ Skipping invalid date at row {}: {}", row.getRowNum(), dateStr);
+                    continue;
+                }
+
+                if (!reportDate.equals(today)) continue;
+
+                DailyReport report = new DailyReport();
+                report.setReportDate(reportDate);
+                report.setSprintNo(getCellValue(row.getCell(1)));
+                report.setTicketNo(getCellValue(row.getCell(2)));
+                report.setParentPc(getCellValue(row.getCell(3)));
+                report.setEmployeeName(getCellValue(row.getCell(4)));
+                report.setWorkPlanned(getCellValue(row.getCell(5)));
+                report.setEstimation(getBigDecimalCellValue(row.getCell(6)));
+                report.setStatus(getCellValue(row.getCell(7)));
+                report.setActualTime(getBigDecimalCellValue(row.getCell(8)));
+                report.setReasonForDelay(getCellValue(row.getCell(9)));
+                report.setComments(getCellValue(row.getCell(10)));
+
+                reports.add(report);
+            }
+
+        } catch (Exception e) {
+            log.error("❌ Error reading Excel file: {}", e.getMessage(), e);
         }
 
-        dailyRepo.save(report);
+        return reports;
+    }
+
+    private String getCellValue(Cell cell) {
+        if (cell == null) return null;
+        return switch (cell.getCellType()) {
+            case STRING -> cell.getStringCellValue().trim();
+            case NUMERIC -> DateUtil.isCellDateFormatted(cell)
+                    ? cell.getLocalDateTimeCellValue().toLocalDate().format(DateTimeFormatter.ofPattern("dd-MM-yyyy"))
+                    : String.valueOf((long) cell.getNumericCellValue());
+            default -> null;
+        };
+    }
+
+    private BigDecimal getBigDecimalCellValue(Cell cell) {
+        if (cell == null) return null;
+        try {
+            return switch (cell.getCellType()) {
+                case NUMERIC -> BigDecimal.valueOf(cell.getNumericCellValue());
+                case STRING -> {
+                    String val = cell.getStringCellValue().trim();
+                    yield val.isEmpty() ? null : new BigDecimal(val);
+                }
+                default -> null;
+            };
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

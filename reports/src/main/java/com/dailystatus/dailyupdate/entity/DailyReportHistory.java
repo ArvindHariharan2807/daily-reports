@@ -17,13 +17,13 @@ public class DailyReportHistory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long historyId;
 
+    // Store the reference to DailyReport
     @ManyToOne
     @JoinColumn(name = "report_id")
     private DailyReport report;
 
-    @ManyToOne
-    @JoinColumn(name = "employee_id")
-    private Employee employee;
+    // Instead of Employee, store employee name directly
+    private String employeeName;
 
     private LocalDate reportDate;
     private String sprintNo;
@@ -34,6 +34,10 @@ public class DailyReportHistory {
     private String status;
     private BigDecimal actualTime;
     private String reasonForDelay;
+    @Lob
     private String comments;
     private LocalDateTime versionTimestamp = LocalDateTime.now();
+
+    @Transient
+    private String resourceName; // for mapping during Excel import if needed
 }
