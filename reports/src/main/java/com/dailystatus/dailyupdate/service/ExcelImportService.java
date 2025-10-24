@@ -16,7 +16,6 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.Optional;
 
 @Slf4j
 @Service
@@ -42,7 +41,6 @@ public class ExcelImportService {
         int importedCount = 0;
 
         for (DailyReport row : excelRows) {
-            // ✅ Validate employee existence before inserting
             String empName = row.getEmployeeName();
             if (empName == null || empName.isBlank()) continue;
 
@@ -53,7 +51,6 @@ public class ExcelImportService {
                 continue;
             }
 
-            // ✅ Only insert/update today's records
             if (!today.equals(row.getReportDate())) continue;
 
             if (row.getTicketNo() != null && !row.getTicketNo().isBlank()) {
@@ -98,7 +95,9 @@ public class ExcelImportService {
                 if (row.getRowNum() == 0) continue; // skip header
 
                 String dateStr = getCellValue(row.getCell(0));
-                if (dateStr == null || dateStr.isBlank()) continue;
+                System.out.println("Row " + row.getRowNum() + " - Date: " + dateStr);
+
+                if (dateStr.isBlank()) continue;
 
                 LocalDate reportDate;
                 try {
@@ -123,6 +122,9 @@ public class ExcelImportService {
                 report.setReasonForDelay(getCellValue(row.getCell(9)));
                 report.setComments(getCellValue(row.getCell(10)));
 
+                // Debug log for verification
+                System.out.println("✅ Parsed Row " + row.getRowNum() + ": " + report);
+
                 reports.add(report);
             }
 
@@ -133,19 +135,46 @@ public class ExcelImportService {
         return reports;
     }
 
+    // Return empty string instead of null for all blank cells
     private String getCellValue(Cell cell) {
-        if (cell == null) return null;
-        return switch (cell.getCellType()) {
-            case STRING -> cell.getStringCellValue().trim();
-            case NUMERIC -> DateUtil.isCellDateFormatted(cell)
-                    ? cell.getLocalDateTimeCellValue().toLocalDate().format(DateTimeFormatter.ofPattern("dd-MM-yyyy"))
-                    : String.valueOf((long) cell.getNumericCellValue());
-            default -> null;
-        };
+        if (cell == null) return "";
+
+        try {
+            return switch (cell.getCellType()) {
+                case STRING -> {
+                    String val = cell.getStringCellValue().trim();
+                    yield val.isEmpty() ? "" : val;
+                }
+                case NUMERIC -> {
+                    if (DateUtil.isCellDateFormatted(cell)) {
+                        yield cell.getLocalDateTimeCellValue()
+                                .toLocalDate()
+                                .format(DateTimeFormatter.ofPattern("dd-MM-yyyy"));
+                    } else {
+                        double num = cell.getNumericCellValue();
+                        yield num == (long) num ? String.valueOf((long) num) : String.valueOf(num);
+                    }
+                }
+                case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
+                case FORMULA -> {
+                    try {
+                        yield cell.getStringCellValue().trim();
+                    } catch (IllegalStateException e) {
+                        yield String.valueOf(cell.getNumericCellValue());
+                    }
+                }
+                default -> "";
+            };
+        } catch (Exception e) {
+            log.warn("⚠️ Error reading cell value: {}", e.getMessage());
+            return "";
+        }
     }
 
+    // Java 21 compatible BigDecimal cell parsing
     private BigDecimal getBigDecimalCellValue(Cell cell) {
         if (cell == null) return null;
+
         try {
             return switch (cell.getCellType()) {
                 case NUMERIC -> BigDecimal.valueOf(cell.getNumericCellValue());
@@ -153,9 +182,20 @@ public class ExcelImportService {
                     String val = cell.getStringCellValue().trim();
                     yield val.isEmpty() ? null : new BigDecimal(val);
                 }
+                case FORMULA -> {
+                    yield switch (cell.getCachedFormulaResultType()) {
+                        case NUMERIC -> BigDecimal.valueOf(cell.getNumericCellValue());
+                        case STRING -> {
+                            String val = cell.getStringCellValue().trim();
+                            yield val.isEmpty() ? null : new BigDecimal(val);
+                        }
+                        default -> null;
+                    };
+                }
                 default -> null;
             };
         } catch (Exception e) {
+            log.warn("⚠️ Invalid numeric cell value at row {}: {}", cell.getRowIndex(), e.getMessage());
             return null;
         }
     }
